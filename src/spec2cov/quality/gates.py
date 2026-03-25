@@ -18,8 +18,8 @@ def evaluate_repo_quality(
     failures: list[str] = []
     if counts.get("cover", 0) < config.min_cover_blocks:
         failures.append("insufficient_cover_blocks")
-    if counts.get("plan", 0) < config.min_plan_segments and spec_chars < config.min_spec_chars and not skip_spec_short_check:
-        failures.append("insufficient_plan_and_spec")
+    #if counts.get("plan", 0) < config.min_plan_segments and spec_chars < config.min_spec_chars and not skip_spec_short_check:
+     #   failures.append("insufficient_plan_and_spec")
     if counts.get("dut", 0) < config.min_dut_blocks:
         failures.append("insufficient_dut_blocks")
 

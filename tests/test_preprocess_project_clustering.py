@@ -103,3 +103,100 @@ def test_preprocess_uses_multiple_project_indices_when_threshold_is_lowered(tmp_
     names = sorted(path.name for path in preprocess_repo_dir.glob("*.txt"))
     assert any(name.startswith("proj0001-") for name in names)
     assert any(name.startswith("proj0002-") for name in names)
+
+
+def test_preprocess_uses_cover_names_for_spec_but_only_signal_names_for_dut(tmp_path: Path, monkeypatch):
+    config = make_config(tmp_path)
+    for path in [config.data_root, config.raw_dir, config.preprocess_dir, config.export_dir, config.log_dir]:
+        path.mkdir(parents=True, exist_ok=True)
+
+    import spec2cov.parsing.sv_pyverilog as sv_module
+
+    monkeypatch.setattr(
+        sv_module,
+        "try_parse_with_pyverilog",
+        lambda _: {"parser": "pyverilog", "success": False, "fallback": True, "error": "unsupported_sv"},
+    )
+
+    db = Database(str(config.db_path))
+    create_all(db.engine)
+    repo_id = seed_repo(db, "owner/split")
+    repo_dir = config.raw_dir / "owner__split"
+    repo_dir.mkdir(parents=True, exist_ok=True)
+
+    (repo_dir / "tb.sv").write_text(
+        "covergroup buffer_cover; cp_head: coverpoint fifo_if.head_ptr_f; endgroup\n"
+        "module cp_head_wrapper(input logic clk); endmodule\n"
+        "module fifo_dut(input logic head_ptr_f); endmodule\n",
+        encoding="utf-8",
+    )
+    (repo_dir / "spec.md").write_text("The cp_head item belongs to buffer_cover behavior.", encoding="utf-8")
+
+    db.upsert_candidate_file(repo_id, {"path": "tb.sv", "ext": ".sv", "size_bytes": 10, "source_url": "", "commit_sha": "1", "metadata": {}})
+    db.upsert_candidate_file(repo_id, {"path": "spec.md", "ext": ".md", "size_bytes": 10, "source_url": "", "commit_sha": "2", "metadata": {}})
+
+    preprocess.run(config)
+
+    preprocess_repo_dir = config.preprocess_dir / "owner__split"
+    spec_contents = [path.read_text(encoding="utf-8") for path in preprocess_repo_dir.glob("*-spec*.txt")]
+    dut_contents = [path.read_text(encoding="utf-8") for path in preprocess_repo_dir.glob("*-dut*.txt")]
+
+    assert spec_contents
+    assert any("buffer_cover" in content or "cp_head" in content for content in spec_contents)
+    assert any("fifo_dut" in content for content in dut_contents)
+    assert all("cp_head_wrapper" not in content for content in dut_contents)
+
+
+def test_assign_project_indices_duplicates_dut_across_equal_keyword_clusters(tmp_path: Path):
+    config = make_config(tmp_path)
+    config.filters.project_cluster_file_threshold = 1
+
+    extracted = [
+        (
+            {
+                "type": "cover",
+                "name": "cover_a",
+                "content": "covergroup cover_a; cp_a: coverpoint if_a.shared_sig; endgroup",
+                "metadata": {
+                    "source_rel_path": "projA/tb_a.sv",
+                    "normalized_keywords": ["covera", "sharedsig"],
+                    "matched_terms": [],
+                },
+            },
+            1,
+        ),
+        (
+            {
+                "type": "cover",
+                "name": "cover_b",
+                "content": "covergroup cover_b; cp_b: coverpoint if_b.shared_sig; endgroup",
+                "metadata": {
+                    "source_rel_path": "projB/tb_b.sv",
+                    "normalized_keywords": ["coverb", "sharedsig"],
+                    "matched_terms": [],
+                },
+            },
+            2,
+        ),
+        (
+            {
+                "type": "dut",
+                "name": "shared_dut",
+                "content": "module shared_dut(input logic shared_sig); endmodule",
+                "metadata": {
+                    "source_rel_path": "",
+                    "normalized_keywords": ["shareddut", "sharedsig"],
+                    "matched_terms": ["sharedsig"],
+                },
+            },
+            3,
+        ),
+    ]
+    repo_files = {"projA/tb_a.sv": {"file_id": 1}, "projB/tb_b.sv": {"file_id": 2}}
+
+    assigned = preprocess.assign_project_indices(extracted, repo_files, config)
+    dut_assignments = [(index, artifact) for index, artifact, _ in assigned if artifact["type"] == "dut"]
+
+    assert len(dut_assignments) == 2
+    assert {index for index, _ in dut_assignments} == {1, 2}
+    assert all(artifact["metadata"]["project_index"] in {1, 2} for _, artifact in dut_assignments)

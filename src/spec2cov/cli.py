@@ -6,7 +6,7 @@ import typer
 
 from spec2cov.config import AppConfig, load_config
 from spec2cov.logging_utils import setup_logging
-from spec2cov.stages import export_jsonl, fetch_filter, init_db, preprocess
+from spec2cov.stages import export_jsonl, fetch_filter, gen_retrieve, init_db, preprocess
 
 app = typer.Typer(help="Spec-to-coverage dataset pipeline")
 
@@ -58,6 +58,15 @@ def export_jsonl_command(
     typer.echo(f"export-jsonl completed (run_id={run_id})")
 
 
+@app.command("gen-retrieve")
+def gen_retrieve_command(
+    config: Path = typer.Option(Path("config/default.yaml"), exists=True, dir_okay=False, readable=True),
+) -> None:
+    cfg = _load(config)
+    run_id = gen_retrieve.run(cfg)
+    typer.echo(f"gen-retrieve completed (run_id={run_id})")
+
+
 @app.command("run-all")
 def run_all_command(
     config: Path = typer.Option(Path("config/default.yaml"), exists=True, dir_okay=False, readable=True),
@@ -67,8 +76,8 @@ def run_all_command(
     init_db.run(cfg)
     fetch_filter.run(cfg, resume=resume)
     preprocess.run(cfg, resume=resume)
-    run_id = export_jsonl.run(cfg, formats=["non-agentic", "agentic"])
-    typer.echo(f"run-all completed (final_run_id={run_id})")
+    run_id = gen_retrieve.run(cfg)
+    typer.echo(f"run-all stopped after gen-retrieve (run_id={run_id}). Manually review/process preprocess outputs, then run: spec2cov.cli export-jsonl")
 
 
 if __name__ == "__main__":

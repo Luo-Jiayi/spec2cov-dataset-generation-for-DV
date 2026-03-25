@@ -9,7 +9,8 @@ from spec2cov.config import AppConfig
 from spec2cov.db.repository import Database, dumps
 from spec2cov.logging_utils import get_logger
 from spec2cov.parsing.doc_extractors import (
-    build_cover_keyword_terms,
+    build_dut_keyword_terms,
+    build_spec_keyword_terms,
     extract_hvp_text,
     extract_markdown_spec,
     extract_pdf_spec,
@@ -130,7 +131,7 @@ def assign_project_indices(
             else:
                 project_index = 1
         else:
-            best_index = None
+            best_indices: list[int] = []
             best_score = -1
             for index, cluster in enumerate(clusters, start=1):
                 score = 0
@@ -148,8 +149,23 @@ def assign_project_indices(
                     score = -1
                 if score > best_score:
                     best_score = score
-                    best_index = index
-            project_index = best_index or 1
+                    best_indices = [index]
+                elif score == best_score and score >= 0:
+                    best_indices.append(index)
+            target_indices = best_indices or [1]
+
+            for project_index in target_indices:
+                cluster = clusters[project_index - 1]
+                cluster["basename_terms"].update(basename_terms)
+                cluster["keyword_terms"].update(artifact_terms)
+                if source_path:
+                    cluster["paths"].add(source_path)
+
+                assigned_metadata = dict(metadata)
+                assigned_metadata["project_index"] = project_index
+                assigned_artifact = {**artifact, "metadata": assigned_metadata}
+                assigned.append((project_index, assigned_artifact, file_id))
+            continue
 
         cluster = clusters[project_index - 1]
         cluster["basename_terms"].update(basename_terms)
@@ -232,7 +248,8 @@ def run(config: AppConfig, resume: bool = False) -> int:
                         "metadata": {**artifact.get("metadata", {}), "source_rel_path": rel_path},
                     }, file_id) for artifact in extract_sv_cover_artifacts(raw_path))
 
-            cover_terms = build_cover_keyword_terms([artifact for artifact, _ in extracted])
+            spec_terms = build_spec_keyword_terms([artifact for artifact, _ in extracted])
+            dut_terms = build_dut_keyword_terms([artifact for artifact, _ in extracted])
 
             # Stage C: spec from md/pdf with cover-driven keywords
             for raw_path in sorted(repo_dir.rglob("*.md")):
@@ -244,7 +261,7 @@ def run(config: AppConfig, resume: bool = False) -> int:
                 extracted.extend(({
                     **artifact,
                     "metadata": {**artifact.get("metadata", {}), "source_rel_path": rel_path},
-                }, file_id) for artifact in extract_markdown_spec(raw_path, cover_terms, config.filters.min_text_chars))
+                }, file_id) for artifact in extract_markdown_spec(raw_path, spec_terms, config.filters.min_text_chars))
 
             for raw_path in sorted(repo_dir.rglob("*.pdf")):
                 rel_path = raw_path.relative_to(repo_dir).as_posix()
@@ -253,7 +270,7 @@ def run(config: AppConfig, resume: bool = False) -> int:
                 extracted.extend(({
                     **artifact,
                     "metadata": {**artifact.get("metadata", {}), "source_rel_path": rel_path},
-                }, file_id) for artifact in extract_pdf_spec(raw_path, cover_terms, config.filters.min_text_chars))
+                }, file_id) for artifact in extract_pdf_spec(raw_path, spec_terms, config.filters.min_text_chars))
 
             placeholder_created = False
             if md_mentions_pdf:
@@ -286,7 +303,7 @@ def run(config: AppConfig, resume: bool = False) -> int:
                 extracted.extend(({
                     **artifact,
                     "metadata": {**artifact.get("metadata", {}), "source_rel_path": rel_path},
-                }, file_id) for artifact in extract_sv_dut_artifacts(raw_path, cover_terms))
+                }, file_id) for artifact in extract_sv_dut_artifacts(raw_path, dut_terms))
 
             clustered = assign_project_indices(extracted, repo_files, config)
 

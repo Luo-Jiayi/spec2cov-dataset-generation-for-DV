@@ -17,6 +17,7 @@ The repository now contains a working first implementation of the pipeline skele
   - `init-db`
   - `fetch-filter`
   - `preprocess`
+  - `gen-retrieve`
   - `export-jsonl`
   - `run-all`
 - Config-driven paths, thresholds, and runtime settings
@@ -28,12 +29,13 @@ The repository now contains a working first implementation of the pipeline skele
   - `.xml` / `.xlsx` -> `plan` (saved as Markdown tables in `*-plan.txt`)
   - `.hvp` -> `hvp`
   - `.ralf` -> `cover`
-  - `.pdf` -> `spec` (converted to Markdown-style text and filtered by cover-driven keywords)
-  - `.v` / `.sv` -> `cover` first, then keyword-filtered `dut`
+  - `.pdf` -> `spec` (converted to Markdown-style text and filtered by spec-oriented cover keywords)
+  - `.v` / `.sv` -> `cover` first, then DUT extraction driven only by coverpoint signal-name keywords
   - `.md` -> keyword-windowed `spec`
   - `.md` mentioning `.pdf` -> empty `spec` placeholder file with spec-short exemption
+- `gen-retrieve` post-processes `data/preprocess/` in place and collapses runs of more than two blank lines
 - Preprocess now follows a cover-driven order: `plan/hvp -> cover -> spec/dut`
-- Artifacts are grouped into repo-internal projects and saved as `proj[index]-[name]-{plan,hvp,cover,spec,dut}.txt`, where `index` is a project cluster id rather than a simple write order
+- Artifacts are grouped into repo-internal projects and saved as `proj[index]-[name]-{plan,hvp,cover,spec,dut}.txt`, where `index` is a project cluster id rather than a simple write order; tied DUT matches can be assigned to multiple project clusters instead of defaulting to the first one
 - JSONL exporters for both non-agentic and agentic benchmark formats
 - Basic tests covering filter logic, dedup, quality gates, and exporter shapes
 
@@ -86,6 +88,12 @@ Preprocess raw files into extracted artifacts:
 ./.venv/Scripts/python -m spec2cov.cli preprocess --resume
 ```
 
+Normalize preprocess artifacts before manual retrieval/review work:
+
+```bash
+./.venv/Scripts/python -m spec2cov.cli gen-retrieve
+```
+
 Export benchmark JSONL files:
 
 ```bash
@@ -97,6 +105,8 @@ Run the whole pipeline:
 ```bash
 ./.venv/Scripts/python -m spec2cov.cli run-all --resume
 ```
+
+`run-all` now stops after `gen-retrieve` so the manual retrieval step can happen before export. After that manual step, run `export-jsonl` separately.
 
 Run tests:
 
@@ -112,7 +122,8 @@ Run tests:
 - CLI help works
 - `init-db` stage runs successfully and creates `data/pipeline.db`
 - `fetch-filter` stage works with github api and pulls files onto `data/raw/`, updates db
-- `preprocess` stage can output files in `data/preprocess/`, though with unsatisfying quality （dut去除always assign block的逻辑有误，还是按照regex而不是ast，应当改成正向用cover的关键词检索需要的module & signal def；cluster也不准确，丢失很多文件；很多仓库缺少文档，考虑后续ai生成补上）
+- `preprocess` stage can output files in `data/preprocess/`, though clustering quality and document coverage still need improvement
+- `gen-retrieve` stage can normalize preprocess artifacts in place by collapsing excessive blank-line runs
 
 ## GitHub token
 
@@ -145,8 +156,11 @@ The pipeline now loads `.env` automatically from the project root when reading [
 - Rate limiting is now controlled by `discovery.request_interval_sec`, `discovery.low_remaining_threshold`, `discovery.rate_limit_buffer_sec`, `discovery.secondary_limit_wait_sec`, and `discovery.secondary_limit_max_retries` in [config/default.yaml](config/default.yaml).
 - Requests are issued serially, search pagination follows the `Link` header, and file content is fetched from GitHub blob API URLs returned by the tree API.
 - When GitHub returns `retry-after`, the fetcher waits that duration before retrying. When GitHub returns `403` or `429` with `x-ratelimit-remaining: 0`, the fetcher waits until `x-ratelimit-reset` and retries only after that reset point.
-- `Pyverilog` is used as the primary parser hook for `.v` / `.sv`, with pragmatic regex/text extraction retained for coverage and DUT blocks because real-world SystemVerilog/UVM syntax support is incomplete.
+- `Pyverilog` is used as an AST/codegen path for Verilog-compatible `module` DUT extraction, while pragmatic regex/text extraction is retained for `covergroup`, `interface`, and SystemVerilog fallback handling because real-world SystemVerilog/UVM syntax support is incomplete.
 - `.pdf` files are now fetched and saved in binary-safe mode during `fetch-filter`, and `preprocess` consumes the preserved PDF bytes with `pypdf`.
-- DUT extraction now excludes `always` / `initial` / `assign` and skips cover-related content.
-- Spec extraction is now driven by cover-derived keywords and keeps only matched keyword windows rather than broad document slices.
+- DUT extraction now uses a hybrid strategy: AST-first for parseable `module` blocks, regex fallback for `module` blocks that cannot be reconstructed from AST, and regex-only extraction for `interface` blocks.
+- Spec extraction is now driven by spec-oriented cover keywords, while DUT extraction only uses signal-name terms derived from coverpoint targets such as `inst.signal`.
+- Cover extraction regex now accepts both `endgroup` and `endgroup : cg_name;` endings.
+- Procedural cleanup deletes matched `always` / `initial` / `assign` lines rather than leaving empty replacement lines.
+- `gen-retrieve` is an in-place cleanup stage between `preprocess` and `export-jsonl`, and `run-all` intentionally stops there for manual intervention before export.
 - The current implementation is a solid runnable foundation intended for iterative refinement of query quality, parsing robustness, multi-project clustering quality, and sample construction quality.

@@ -129,19 +129,48 @@ def build_spec_seed_terms(existing_artifacts: list[dict], filter_config: FilterC
     return {seed for seed in seeds if seed}
 
 
-def build_cover_keyword_terms(existing_artifacts: list[dict]) -> set[str]:
+def _build_cover_keyword_terms(
+    existing_artifacts: list[dict],
+    *,
+    metadata_fields: tuple[str, ...],
+    include_content_terms: bool,
+) -> set[str]:
     keywords: set[str] = set()
     for artifact in existing_artifacts:
         if artifact["type"] != "cover":
             continue
         metadata = artifact.get("metadata", {})
-        for field in ("normalized_keywords", "covergroup_names", "coverpoint_terms", "cross_terms"):
+        for field in metadata_fields:
             for value in metadata.get(field, []):
                 normalized = normalize_match_key(value)
                 if normalized:
                     keywords.add(normalized)
-        keywords.update(extract_terms(artifact["content"]))
+        if include_content_terms:
+            keywords.update(extract_terms(artifact["content"]))
     return keywords
+
+
+def build_spec_keyword_terms(existing_artifacts: list[dict]) -> set[str]:
+    return _build_cover_keyword_terms(
+        existing_artifacts,
+        metadata_fields=(
+            "normalized_keywords",
+            "covergroup_names",
+            "coverpoint_names",
+            "coverpoint_targets",
+            "coverpoint_signal_terms",
+            "cross_terms",
+        ),
+        include_content_terms=True,
+    )
+
+
+def build_dut_keyword_terms(existing_artifacts: list[dict]) -> set[str]:
+    return _build_cover_keyword_terms(
+        existing_artifacts,
+        metadata_fields=("coverpoint_signal_terms",),
+        include_content_terms=False,
+    )
 
 
 def markdown_mentions_pdf(path: Path) -> bool:
