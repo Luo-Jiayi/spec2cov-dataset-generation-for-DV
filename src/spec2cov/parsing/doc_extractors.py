@@ -173,9 +173,23 @@ def build_dut_keyword_terms(existing_artifacts: list[dict]) -> set[str]:
     )
 
 
-def markdown_mentions_pdf(path: Path) -> bool:
+def extract_markdown_pdf_reference_lines(path: Path) -> list[str]:
     source = path.read_text(encoding="utf-8", errors="ignore")
-    return PDF_REFERENCE_RE.search(source) is not None
+    lines: list[str] = []
+    seen: set[str] = set()
+    for raw_line in source.splitlines():
+        line = raw_line.strip()
+        if not line or PDF_REFERENCE_RE.search(raw_line) is None:
+            continue
+        if line in seen:
+            continue
+        seen.add(line)
+        lines.append(line)
+    return lines
+
+
+def markdown_mentions_pdf(path: Path) -> bool:
+    return bool(extract_markdown_pdf_reference_lines(path))
 
 
 def _paragraph_windows(paragraphs: list[str], index: int) -> str:

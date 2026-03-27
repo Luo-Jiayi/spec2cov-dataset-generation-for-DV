@@ -11,6 +11,7 @@ from spec2cov.logging_utils import get_logger
 from spec2cov.parsing.doc_extractors import (
     build_dut_keyword_terms,
     build_spec_keyword_terms,
+    extract_markdown_pdf_reference_lines,
     extract_hvp_text,
     extract_markdown_spec,
     extract_pdf_spec,
@@ -18,7 +19,6 @@ from spec2cov.parsing.doc_extractors import (
     extract_terms,
     extract_xlsx_plan,
     extract_xml_plan,
-    markdown_mentions_pdf,
     normalize_match_key,
 )
 from spec2cov.parsing.sv_pyverilog import extract_sv_cover_artifacts, extract_sv_dut_artifacts
@@ -34,7 +34,17 @@ def repo_slug(full_name: str) -> str:
 
 def artifact_filename(index: int, name: str, artifact_type: str) -> str:
     safe_name = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in name)[:80] or "artifact"
-    return f"proj{index:04d}-{safe_name}-{artifact_type}.txt"
+    return f"proj{index:04d}-{safe_name}-{artifact_type}"
+
+
+def artifact_output_suffix(artifact: dict[str, Any]) -> str:
+    metadata = artifact.get("metadata", {}) or {}
+    source_type = str(metadata.get("source_type", "")).lower()
+    if artifact["type"] in {"dut", "cover", "assert"} and source_type in {".v", ".sv"}:
+        return ".sv"
+    if artifact["type"] == "cover" and source_type == "ralf":
+        return ".ralf"
+    return ".txt"
 
 
 def content_hash(text: str) -> str:
@@ -61,17 +71,6 @@ def _basename_tokens(path: str, ignore_tokens: set[str]) -> set[str]:
     generic_tokens = {"plan", "spec"}
     parts = [normalize_match_key(part) for part in __import__("re").findall(r"[A-Za-z0-9]+", stem)]
     return {part for part in parts if part and part not in ignore_tokens and part not in generic_tokens}
-
-
-def _path_distance(a: str, b: str) -> int:
-    a_parts = Path(a).parts[:-1]
-    b_parts = Path(b).parts[:-1]
-    common = 0
-    for left, right in zip(a_parts, b_parts):
-        if left != right:
-            break
-        common += 1
-    return (len(a_parts) - common) + (len(b_parts) - common)
 
 
 def assign_project_indices(
@@ -138,13 +137,9 @@ def assign_project_indices(
                 basename_overlap = bool(basename_terms and basename_terms & cluster["basename_terms"])
                 keyword_overlap = bool(artifact_terms & cluster["keyword_terms"])
                 if basename_overlap:
-                    score += 3
+                    score += 1
                 if keyword_overlap:
-                    score += 2
-                if file_count > config.filters.project_cluster_file_threshold and source_path and cluster["paths"]:
-                    distance = min(_path_distance(source_path, existing) for existing in cluster["paths"])
-                    if distance <= depth_tolerance:
-                        score += 1
+                    score += 4
                 if not basename_overlap and not keyword_overlap:
                     score = -1
                 if score > best_score:
@@ -203,7 +198,8 @@ def run(config: AppConfig, resume: bool = False) -> int:
 
             repo_files = {str(Path(row["path"])): row for row in db.list_candidate_files(repo_id=repo_id)}
             extracted: list[tuple[dict[str, Any], int | None]] = []
-            md_mentions_pdf = False
+            md_pdf_reference_lines: list[str] = []
+            same_file_dut_paths: set[str] = set()
 
             # Stage A: plan and hvp
             for raw_path in sorted(repo_dir.rglob("*")):
@@ -229,7 +225,7 @@ def run(config: AppConfig, resume: bool = False) -> int:
                         "metadata": {**artifact.get("metadata", {}), "source_rel_path": rel_path},
                     }, file_id) for artifact in extract_hvp_text(raw_path))
 
-            # Stage B: cover
+            # Stage B: cover + assert
             for raw_path in sorted(repo_dir.rglob("*")):
                 if not raw_path.is_file():
                     continue
@@ -243,10 +239,18 @@ def run(config: AppConfig, resume: bool = False) -> int:
                         "metadata": {**artifact.get("metadata", {}), "source_rel_path": rel_path},
                     }, file_id) for artifact in extract_ralf_text(raw_path))
                 elif suffix in {".v", ".sv"}:
-                    extracted.extend(({
-                        **artifact,
-                        "metadata": {**artifact.get("metadata", {}), "source_rel_path": rel_path},
-                    }, file_id) for artifact in extract_sv_cover_artifacts(raw_path))
+                    for artifact in extract_sv_cover_artifacts(raw_path):
+                        if artifact.get("metadata", {}).get("same_file_dut"):
+                            same_file_dut_paths.add(rel_path)
+                        extracted.append(
+                            (
+                                {
+                                    **artifact,
+                                    "metadata": {**artifact.get("metadata", {}), "source_rel_path": rel_path},
+                                },
+                                file_id,
+                            )
+                        )
 
             spec_terms = build_spec_keyword_terms([artifact for artifact, _ in extracted])
             dut_terms = build_dut_keyword_terms([artifact for artifact, _ in extracted])
@@ -256,8 +260,7 @@ def run(config: AppConfig, resume: bool = False) -> int:
                 rel_path = raw_path.relative_to(repo_dir).as_posix()
                 file_row = repo_files.get(rel_path)
                 file_id = int(file_row["file_id"]) if file_row else None
-                if markdown_mentions_pdf(raw_path):
-                    md_mentions_pdf = True
+                md_pdf_reference_lines.extend(extract_markdown_pdf_reference_lines(raw_path))
                 extracted.extend(({
                     **artifact,
                     "metadata": {**artifact.get("metadata", {}), "source_rel_path": rel_path},
@@ -273,13 +276,13 @@ def run(config: AppConfig, resume: bool = False) -> int:
                 }, file_id) for artifact in extract_pdf_spec(raw_path, spec_terms, config.filters.min_text_chars))
 
             placeholder_created = False
-            if md_mentions_pdf:
+            if md_pdf_reference_lines:
                 extracted.append(
                     (
                         {
                             "type": "spec",
                             "name": "pdf-ref-placeholder",
-                            "content": "",
+                            "content": "\n".join(dict.fromkeys(md_pdf_reference_lines)),
                             "metadata": {
                                 "source_type": "md_pdf_reference",
                                 "placeholder": True,
@@ -303,19 +306,19 @@ def run(config: AppConfig, resume: bool = False) -> int:
                 extracted.extend(({
                     **artifact,
                     "metadata": {**artifact.get("metadata", {}), "source_rel_path": rel_path},
-                }, file_id) for artifact in extract_sv_dut_artifacts(raw_path, dut_terms))
+                }, file_id) for artifact in extract_sv_dut_artifacts(raw_path, dut_terms, include_all=rel_path in same_file_dut_paths))
 
             clustered = assign_project_indices(extracted, repo_files, config)
 
             artifact_rows: list[dict[str, Any]] = []
             used_names: dict[str, int] = {}
             for _, (project_index, artifact, file_id) in enumerate(clustered, start=1):
-                base_filename = artifact_filename(project_index, artifact["name"], artifact["type"])
-                stem = Path(base_filename).stem
-                suffix = Path(base_filename).suffix
+                suffix = artifact_output_suffix(artifact)
+                base_stem = artifact_filename(project_index, artifact["name"], artifact["type"])
+                stem = Path(base_stem).stem
                 count = used_names.get(stem, 0) + 1
                 used_names[stem] = count
-                final_filename = base_filename if count == 1 else f"{stem}-{count}{suffix}"
+                final_filename = f"{stem}{suffix}" if count == 1 else f"{stem}-{count}{suffix}"
                 output_path = preprocess_dir / final_filename
                 output_path.write_text(artifact["content"], encoding="utf-8")
                 artifact_rows.append(build_artifact_row(repo_id, file_id, artifact, output_path))
@@ -324,7 +327,7 @@ def run(config: AppConfig, resume: bool = False) -> int:
             passed, score, counts, discard_reason = evaluate_repo_quality(
                 artifact_rows,
                 config.quality_gates,
-                skip_spec_short_check=md_mentions_pdf and placeholder_created,
+                skip_spec_short_check=bool(md_pdf_reference_lines) and placeholder_created,
             )
             db.upsert_repo_quality(
                 repo_id=repo_id,

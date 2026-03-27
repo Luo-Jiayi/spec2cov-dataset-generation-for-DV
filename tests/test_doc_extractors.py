@@ -6,6 +6,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from spec2cov.parsing.doc_extractors import (
     build_dut_keyword_terms,
     build_spec_keyword_terms,
+    extract_markdown_pdf_reference_lines,
     extract_pdf_spec,
     extract_xlsx_plan,
     extract_xml_plan,
@@ -54,6 +55,22 @@ def test_markdown_mentions_pdf_detects_references(tmp_path: Path):
     path.write_text("See [datasheet](docs/spec.pdf) for details.", encoding="utf-8")
 
     assert markdown_mentions_pdf(path) is True
+
+
+def test_extract_markdown_pdf_reference_lines_returns_matching_lines(tmp_path: Path):
+    path = tmp_path / "spec.md"
+    path.write_text(
+        "Intro\n"
+        "See [datasheet](docs/spec.pdf) for details.\n"
+        "Mirror: https://example.com/spec.pdf\n"
+        "See [datasheet](docs/spec.pdf) for details.\n",
+        encoding="utf-8",
+    )
+
+    assert extract_markdown_pdf_reference_lines(path) == [
+        "See [datasheet](docs/spec.pdf) for details.",
+        "Mirror: https://example.com/spec.pdf",
+    ]
 
 
 def test_extract_pdf_spec_returns_markdown_sections(tmp_path: Path):

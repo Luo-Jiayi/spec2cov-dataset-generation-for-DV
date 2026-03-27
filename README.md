@@ -2,7 +2,7 @@
 
 A Python pipeline for building a spec-to-coverage dataset and benchmark database from open-source GitHub SystemVerilog / UVM repositories.
 ## workflow
-use workflow from OpenLLM-RTL: Open Dataset and Benchmark for LLM-Aided Design RTL Generation: Invited Paper
+use workflow from Benchmarking Large Language Models for Automated Verilog RTL Code Generation
 1. use Google BigQuery or GitHub REST api to gather Verilog repositories from GitHub. use a query that looks for keywords such as "Verilog" "SystemVerilog" "uvm" and files with extensions '.v' '.sv' (source files) or '.md' (specification files) or '.xml' '.xlsx' (testplan files) or '.ralf' (ralgen files) or '.hvp' (hierarchical verification plan files). de-duplicated files (using MinHash and Jaccard similarity metrics) and filter files by keeping '.v' '.sv' files that contain keywords 'covergroup' 'bins' 'coverpoint' 'cover'.
 2. also import csv files (例如ref:https://github.com/mayurkubavat/UVM-Examples 这个仓库给出了多个UVM项目，https://blog.csdn.net/zhajio/article/details/110846081 这个网页上给出了一些github仓库的链接，可以省了检索直接把链接到db里)
 4. use Pyverilog to extract to abstract syntax tree from Verilog/SystemVerilog code and employ the following filtering process to identify coverage model, interface and module definition blocks from open-sourced Github Verilog code
@@ -100,6 +100,8 @@ Export benchmark JSONL files:
 ./.venv/Scripts/python -m spec2cov.cli export-jsonl
 ```
 
+`export-jsonl` now reads grouped artifacts directly from `data/codex-preprocess/` and loads prompt fields from `data/codex-preprocess/prompt.yaml` (`prompt_template` and `system_message`).
+
 Run the whole pipeline:
 
 ```bash
@@ -123,7 +125,7 @@ Run tests:
 - `init-db` stage runs successfully and creates `data/pipeline.db`
 - `fetch-filter` stage works with github api and pulls files onto `data/raw/`, updates db
 - `preprocess` stage can output files in `data/preprocess/`, though clustering quality and document coverage still need improvement
-- `gen-retrieve` stage can normalize preprocess artifacts in place by collapsing excessive blank-line runs
+- `gen-retrieve` stage can normalize preprocess artifacts in place by collapsing excessive blank-line runs. then manually or use ai to cluster, format and augment spec segments (may need re-generating)
 
 ## GitHub token
 

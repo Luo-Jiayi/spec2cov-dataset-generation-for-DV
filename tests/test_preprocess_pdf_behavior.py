@@ -69,7 +69,39 @@ def test_preprocess_generates_placeholder_spec_and_keeps_repo(tmp_path: Path):
     spec_artifacts = [row for row in artifacts if row["artifact_type"] == "spec"]
     assert spec_artifacts
     paths = [Path(row["content_path"]) for row in spec_artifacts]
-    assert any(path.read_text(encoding="utf-8") == "" for path in paths)
+    assert any(path.read_text(encoding="utf-8") == "See details in design.pdf" for path in paths)
+
+
+def test_preprocess_preserves_expected_output_suffixes(tmp_path: Path):
+    config = make_config(tmp_path)
+    for path in [config.data_root, config.raw_dir, config.preprocess_dir, config.export_dir, config.log_dir]:
+        path.mkdir(parents=True, exist_ok=True)
+
+    db = Database(str(config.db_path))
+    create_all(db.engine)
+    repo_id = seed_repo(db, "owner/suffixes")
+    repo_dir = config.raw_dir / "owner__suffixes"
+    repo_dir.mkdir(parents=True, exist_ok=True)
+
+    (repo_dir / "tb.sv").write_text(
+        "covergroup cg; cp_a: coverpoint if_a.a; endgroup\nmodule dut(input logic a); endmodule\n",
+        encoding="utf-8",
+    )
+    (repo_dir / "regs.ralf").write_text("block regs { register ctrl; }", encoding="utf-8")
+    (repo_dir / "spec.md").write_text("The cg coverpoint documents signal a.", encoding="utf-8")
+
+    db.upsert_candidate_file(repo_id, {"path": "tb.sv", "ext": ".sv", "size_bytes": 10, "source_url": "", "commit_sha": "sha1", "metadata": {}})
+    db.upsert_candidate_file(repo_id, {"path": "regs.ralf", "ext": ".ralf", "size_bytes": 10, "source_url": "", "commit_sha": "sha2", "metadata": {}})
+    db.upsert_candidate_file(repo_id, {"path": "spec.md", "ext": ".md", "size_bytes": 10, "source_url": "", "commit_sha": "sha3", "metadata": {}})
+
+    preprocess.run(config)
+
+    output_names = sorted(path.name for path in (config.preprocess_dir / "owner__suffixes").glob("*"))
+
+    assert any(name.endswith("-cover.sv") for name in output_names)
+    assert any(name.endswith("-dut.sv") for name in output_names)
+    assert any(name.endswith("-cover.ralf") for name in output_names)
+    assert any(name.endswith("-spec.txt") for name in output_names)
 
 
 def test_preprocess_pdf_spec_extraction_is_saved(tmp_path: Path):

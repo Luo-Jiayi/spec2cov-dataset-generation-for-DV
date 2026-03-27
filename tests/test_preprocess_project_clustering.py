@@ -81,7 +81,7 @@ def test_preprocess_uses_single_project_when_file_count_is_below_threshold(tmp_p
     preprocess.run(config)
 
     preprocess_repo_dir = config.preprocess_dir / "owner__multi"
-    names = sorted(path.name for path in preprocess_repo_dir.glob("*.txt"))
+    names = sorted(path.name for path in preprocess_repo_dir.glob("*"))
     assert names
     assert all(name.startswith("proj0001-") for name in names)
 
@@ -100,7 +100,7 @@ def test_preprocess_uses_multiple_project_indices_when_threshold_is_lowered(tmp_
     preprocess.run(config)
 
     preprocess_repo_dir = config.preprocess_dir / "owner__multi"
-    names = sorted(path.name for path in preprocess_repo_dir.glob("*.txt"))
+    names = sorted(path.name for path in preprocess_repo_dir.glob("*"))
     assert any(name.startswith("proj0001-") for name in names)
     assert any(name.startswith("proj0002-") for name in names)
 
@@ -139,12 +139,103 @@ def test_preprocess_uses_cover_names_for_spec_but_only_signal_names_for_dut(tmp_
 
     preprocess_repo_dir = config.preprocess_dir / "owner__split"
     spec_contents = [path.read_text(encoding="utf-8") for path in preprocess_repo_dir.glob("*-spec*.txt")]
-    dut_contents = [path.read_text(encoding="utf-8") for path in preprocess_repo_dir.glob("*-dut*.txt")]
+    dut_contents = [path.read_text(encoding="utf-8") for path in preprocess_repo_dir.glob("*-dut*.sv")]
 
     assert spec_contents
     assert any("buffer_cover" in content or "cp_head" in content for content in spec_contents)
     assert any("fifo_dut" in content for content in dut_contents)
     assert all("cp_head_wrapper" not in content for content in dut_contents)
+
+
+def test_preprocess_uses_same_file_dut_for_cover_property_files(tmp_path: Path, monkeypatch):
+    config = make_config(tmp_path)
+    for path in [config.data_root, config.raw_dir, config.preprocess_dir, config.export_dir, config.log_dir]:
+        path.mkdir(parents=True, exist_ok=True)
+
+    import spec2cov.parsing.sv_pyverilog as sv_module
+
+    monkeypatch.setattr(
+        sv_module,
+        "try_parse_with_pyverilog",
+        lambda _: {"parser": "pyverilog", "success": False, "fallback": True, "error": "unsupported_sv"},
+    )
+
+    db = Database(str(config.db_path))
+    create_all(db.engine)
+    repo_id = seed_repo(db, "owner/coverprop")
+    repo_dir = config.raw_dir / "owner__coverprop"
+    repo_dir.mkdir(parents=True, exist_ok=True)
+
+    (repo_dir / "tb.sv").write_text(
+        "property p_ready;\n"
+        "  @(posedge clk) req |-> ready;\n"
+        "endproperty\n"
+        "cp_ready: cover property(p_ready);\n"
+        "module dut_only_here(input logic req, input logic ready);\n"
+        "endmodule\n",
+        encoding="utf-8",
+    )
+
+    db.upsert_candidate_file(repo_id, {"path": "tb.sv", "ext": ".sv", "size_bytes": 10, "source_url": "", "commit_sha": "1", "metadata": {}})
+
+    preprocess.run(config)
+
+    preprocess_repo_dir = config.preprocess_dir / "owner__coverprop"
+    cover_contents = [path.read_text(encoding="utf-8") for path in preprocess_repo_dir.glob("*-cover*.sv")]
+    dut_contents = [path.read_text(encoding="utf-8") for path in preprocess_repo_dir.glob("*-dut*.sv")]
+
+    assert any("cover property(p_ready)" in content for content in cover_contents)
+    assert any("module dut_only_here" in content for content in dut_contents)
+
+
+def test_preprocess_removes_assert_property_from_same_interface_dut(tmp_path: Path, monkeypatch):
+    config = make_config(tmp_path)
+    for path in [config.data_root, config.raw_dir, config.preprocess_dir, config.export_dir, config.log_dir]:
+        path.mkdir(parents=True, exist_ok=True)
+
+    import spec2cov.parsing.sv_pyverilog as sv_module
+
+    monkeypatch.setattr(
+        sv_module,
+        "try_parse_with_pyverilog",
+        lambda _: {"parser": "pyverilog", "success": False, "fallback": True, "error": "unsupported_sv"},
+    )
+
+    db = Database(str(config.db_path))
+    create_all(db.engine)
+    repo_id = seed_repo(db, "owner/ubus")
+    repo_dir = config.raw_dir / "owner__ubus"
+    repo_dir.mkdir(parents=True, exist_ok=True)
+
+    (repo_dir / "ubus_if.sv").write_text(
+        "interface ubus_if(input logic clk);\n"
+        "  logic sig_addr;\n"
+        "  logic has_checks;\n"
+        "  assertAddrUnknown: assert property (\n"
+        "    @(posedge clk) disable iff(!has_checks) !$isunknown(sig_addr)\n"
+        "  );\n"
+        "  cp_addr_ok: cover property (@(posedge clk) sig_addr == sig_addr);\n"
+        "  modport mon(input sig_addr);\n"
+        "endinterface\n",
+        encoding="utf-8",
+    )
+
+    db.upsert_candidate_file(repo_id, {"path": "ubus_if.sv", "ext": ".sv", "size_bytes": 10, "source_url": "", "commit_sha": "1", "metadata": {}})
+
+    preprocess.run(config)
+
+    preprocess_repo_dir = config.preprocess_dir / "owner__ubus"
+    assert_contents = [path.read_text(encoding="utf-8") for path in preprocess_repo_dir.glob("*-assert*.sv")]
+    cover_contents = [path.read_text(encoding="utf-8") for path in preprocess_repo_dir.glob("*-cover*.sv")]
+    dut_contents = [path.read_text(encoding="utf-8") for path in preprocess_repo_dir.glob("*-dut*.sv")]
+
+    assert any("assertAddrUnknown: assert property" in content for content in assert_contents)
+    assert any("cover property" in content for content in cover_contents)
+    assert any("interface ubus_if" in content for content in dut_contents)
+    assert all("assertAddrUnknown" not in content for content in dut_contents)
+    assert all("assert property" not in content for content in dut_contents)
+    assert all("cover property" not in content for content in dut_contents)
+    assert all("property " not in content for content in dut_contents)
 
 
 def test_assign_project_indices_duplicates_dut_across_equal_keyword_clusters(tmp_path: Path):
