@@ -9,7 +9,8 @@ import yaml
 
 from spec2cov.config import AppConfig
 from spec2cov.db.repository import Database
-from spec2cov.exporters import agentic, non_agentic
+from spec2cov.exporters import agentic
+# from spec2cov.exporters import non_agentic
 from spec2cov.logging_utils import get_logger
 
 
@@ -31,12 +32,18 @@ def _path_to_context_key(path: Path, artifact_type: str) -> str:
     return f"misc/{path.name}"
 
 
-def _load_prompts(config: AppConfig) -> tuple[str, str]:
+def _load_prompts(config: AppConfig) -> tuple[str | dict[str, str], str]:
     prompt_path = config.data_root / "codex-preprocess" / _PROMPT_FILE_NAME
     if not prompt_path.exists():
         return config.export.prompt_template, config.export.system_message
     raw = yaml.safe_load(prompt_path.read_text(encoding="utf-8")) or {}
-    return str(raw.get("prompt_template", config.export.prompt_template)), str(raw.get("system_message", config.export.system_message))
+    prompt_template = raw.get("prompt_template", config.export.prompt_template)
+    if isinstance(prompt_template, dict):
+        prompt_template = {str(key): str(value) for key, value in prompt_template.items()}
+    else:
+        prompt_template = str(prompt_template)
+    system_message = str(raw.get("system_message", config.export.system_message))
+    return prompt_template, system_message
 
 
 def build_samples_from_codex_preprocess(config: AppConfig) -> list[dict]:
@@ -85,29 +92,39 @@ def build_samples_from_codex_preprocess(config: AppConfig) -> list[dict]:
     return samples
 
 
-def export_format(db: Database, config: AppConfig, run_id: int, format_name: str, samples: list[dict]) -> Path:
+def export_format(db: Database, config: AppConfig, run_id: int, samples: list[dict]) -> Path:
     prompt_template, system_message = _load_prompts(config)
-    output_path = config.export_dir / ("non_agentic.jsonl" if format_name == "non-agentic" else "agentic.jsonl")
+
+    # Non-agentic export is temporarily disabled.
+    # output_path = config.export_dir / ("non_agentic.jsonl" if format_name == "non-agentic" else "agentic.jsonl")
+    output_path = config.export_dir / "agentic.jsonl"
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     lines: list[bytes] = []
     ids: list[str] = []
     for sample in samples:
-        if format_name == "non-agentic":
-            record = non_agentic.build_record(sample, config, prompt_template=prompt_template)
-        else:
-            record = agentic.build_record(sample, config, prompt_template=prompt_template, system_message=system_message)
+        # Non-agentic branch is temporarily disabled.
+        # if format_name == "non-agentic":
+        #     record = non_agentic.build_record(sample, config, prompt_template=prompt_template)
+        # else:
+        #     record = agentic.build_record(sample, config, prompt_template=prompt_template, system_message=system_message)
+        record = agentic.build_record(
+            sample,
+            config,
+            prompt_template=prompt_template,
+            system_message=system_message,
+        )
         ids.append(record["id"])
         lines.append(orjson.dumps(record))
 
     payload = b"\n".join(lines) + (b"\n" if lines else b"")
     output_path.write_bytes(payload)
     manifest = {
-        "format": format_name,
+        "format": "agentic",
         "record_ids": ids,
         "sha256": hashlib.sha256(payload).hexdigest(),
     }
-    db.record_export(format_name=format_name, output_path=str(output_path), run_id=run_id, record_count=len(lines), manifest=manifest)
+    db.record_export(format_name="agentic", output_path=str(output_path), run_id=run_id, record_count=len(lines), manifest=manifest)
     return output_path
 
 
@@ -117,9 +134,12 @@ def run(config: AppConfig, formats: list[str]) -> int:
     run_id = db.create_pipeline_run(stage="export-jsonl", config_snapshot=config.snapshot(), code_version=config.code_version)
     try:
         samples = build_samples_from_codex_preprocess(config)
-        for format_name in formats:
-            output_path = export_format(db, config, run_id=run_id, format_name=format_name, samples=samples)
-            logger.info("export_jsonl.completed", run_id=run_id, format=format_name, output_path=str(output_path))
+        # Non-agentic loop is temporarily disabled.
+        # for format_name in formats:
+        #     output_path = export_format(db, config, run_id=run_id, format_name=format_name, samples=samples)
+        #     logger.info("export_jsonl.completed", run_id=run_id, format=format_name, output_path=str(output_path))
+        output_path = export_format(db, config, run_id=run_id, samples=samples)
+        logger.info("export_jsonl.completed", run_id=run_id, format="agentic", output_path=str(output_path))
         db.finish_pipeline_run(run_id, status="completed")
         return run_id
     except Exception as exc:
